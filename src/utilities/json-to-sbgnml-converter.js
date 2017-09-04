@@ -1,231 +1,457 @@
+var txtUtil = require('./text-utilities');
+var elementUtilities = require('./element-utilities');
+var libsbgnjs = require('libsbgn.js');
+var renderExtension = libsbgnjs.render;
+var annot = libsbgnjs.annot;
+var pkgVersion = require('../../package.json').version; // need info about sbgnviz to put in xml
+var pkgName = require('../../package.json').name;
+var prettyprint = require('pretty-data').pd;
+var graphUtilities = require('./graph-utilities');
+var xml2js = require('xml2js');
+var mapPropertiesBuilder = new xml2js.Builder({rootName: "mapProperties"});
+
 var jsonToSbgnml = {
-    createSbgnml : function(){
+    /*
+        takes renderInfo as an optional argument. It contains all the information needed to save
+        the style and colors to the render extension. See newt/app-utilities getAllStyles()
+        Structure: {
+            background: the map background color,
+            colors: {
+              validXmlValue: color_id
+              ...
+            },
+            styles: {
+                styleKey1: {
+                    idList: list of the nodes ids that have this style
+                    properties: {
+                        fontSize: ...
+                        fill: ...
+                        ...
+                    }
+                }
+                styleKey2: ...
+                ...
+            }
+        }
+    */
+    createSbgnml : function(filename, renderInfo, mapProperties){
         var self = this;
-        var sbgnmlText = "";
+        var mapID = txtUtil.getXMLValidId(filename);
+        var hasExtension = false;
+        var hasRenderExtension = false;
+        this.allCollapsedNodes = cy.expandCollapse('get').getAllCollapsedChildrenRecursively().filter("node");
+        this.allCollapsedEdges = cy.expandCollapse('get').getAllCollapsedChildrenRecursively().filter("edge");
+
+        if (typeof renderInfo !== 'undefined') {
+            hasExtension = true;
+            hasRenderExtension = true;
+        }
+
+        var mapLanguage;
+        if(elementUtilities.mapType == "PD") {
+            mapLanguage = "process description";
+        }
+        else if(elementUtilities.mapType == "AF") {
+            mapLanguage = "activity flow";
+        }
+        else {
+            // case of a mixed map with bits of AF and PD for example
+            mapLanguage = "unknown";
+        }
 
         //add headers
-        sbgnmlText = sbgnmlText + "<?xml version='1.0' encoding='UTF-8' standalone='yes'?>\n";
-        sbgnmlText = sbgnmlText + "<sbgn xmlns='http://sbgn.org/libsbgn/0.2'>\n";
-        sbgnmlText = sbgnmlText + "<map language='process description'>\n";
+        xmlHeader = "<?xml version='1.0' encoding='UTF-8' standalone='yes'?>\n";
+        var sbgn = new libsbgnjs.Sbgn({xmlns: 'http://sbgn.org/libsbgn/0.3'});
+        var map = new libsbgnjs.Map({language: mapLanguage, id: mapID});
+        if (hasExtension) { // extension is there
+            var extension = new libsbgnjs.Extension();
+            if (hasRenderExtension) {
+                extension.add(self.getRenderExtensionSbgnml(renderInfo));
+            }
+            map.setExtension(extension);
+            if (mapProperties) {
+                var xml = mapPropertiesBuilder.buildObject(mapProperties);
+                map.extension.add(xml);
+            }
 
-        //adding glyph sbgnml
-        cy.nodes(":visible").each(function(){
-            if(!this.isChild())
-                sbgnmlText = sbgnmlText + self.getGlyphSbgnml(this);
+        } else if (mapProperties) {
+            map.setExtension(new libsbgnjs.Extension());
+            map.extension.add(mapPropertiesBuilder.buildObject(mapProperties));
+        }
+
+        // get all glyphs
+        var glyphList = [];
+        // be careful that :visible is also used during recursive search of nodes
+        // in the getGlyphSbgnml function. If not set accordingly, discrepancies will occur.
+        cy.nodes().each(function(ele, i){
+            if(typeof ele === "number") {
+              ele = i;
+            }
+            if(!ele.isChild())
+                glyphList = glyphList.concat(self.getGlyphSbgnml(ele)); // returns potentially more than 1 glyph
+        });
+        // add them to the map
+        for(var i=0; i<glyphList.length; i++) {
+            map.addGlyph(glyphList[i]);
+        }
+        // get all arcs
+        var edges = this.allCollapsedEdges.union(cy.edges());
+        edges.each(function(ele, i){
+            if(typeof ele === "number") {
+              ele = i;
+            }
+            map.addArc(self.getArcSbgnml(ele));
         });
 
-        //adding arc sbgnml
-        cy.edges(":visible").each(function(){
-            sbgnmlText = sbgnmlText + self.getArcSbgnml(this);
-        });
+        sbgn.addMap(map);
+        return prettyprint.xml(xmlHeader + sbgn.toXML());
+    },
 
-        sbgnmlText = sbgnmlText + "</map>\n";
-        sbgnmlText = sbgnmlText + "</sbgn>\n";
+    // see createSbgnml for info on the structure of renderInfo
+    getRenderExtensionSbgnml : function(renderInfo) {
+        // initialize the main container
+        var renderInformation = new renderExtension.RenderInformation({ id: 'renderInformation', 
+                                                                        backgroundColor: renderInfo.background,
+                                                                        programName: pkgName,
+                                                                        programVersion: pkgVersion });
 
-        return sbgnmlText;
+        // populate list of colors
+        var listOfColorDefinitions = new renderExtension.ListOfColorDefinitions();
+        for (var color in renderInfo.colors) {
+            var colorDefinition = new renderExtension.ColorDefinition({id: renderInfo.colors[color], value: color});
+            listOfColorDefinitions.addColorDefinition(colorDefinition);
+        }
+        renderInformation.setListOfColorDefinitions(listOfColorDefinitions);
+
+        // populates styles
+        var listOfStyles = new renderExtension.ListOfStyles();
+        for (var key in renderInfo.styles) {
+            var style = renderInfo.styles[key];
+            var xmlStyle = new renderExtension.Style({id: txtUtil.getXMLValidId(key), idList: style.idList.join(' ')});
+            var g = new renderExtension.RenderGroup({
+                fontSize: style.properties.fontSize,
+                fontFamily: style.properties.fontFamily,
+                fontWeight: style.properties.fontWeight,
+                fontStyle: style.properties.fontStyle,
+                fill: style.properties.fill, // fill color
+                stroke: style.properties.stroke, // stroke color
+                strokeWidth: style.properties.strokeWidth
+            });
+            xmlStyle.setRenderGroup(g);
+            listOfStyles.addStyle(xmlStyle);
+        }
+        renderInformation.setListOfStyles(listOfStyles);
+
+        return renderInformation;
+    },
+
+    getAnnotationExtension: function(cyElement) {
+        var annotations = cyElement.data('annotations');
+        var annotExt = new annot.Annotation();
+        var rdfElement = new annot.RdfElement();
+        for (var annotID in annotations) {
+            var currentAnnot = annotations[annotID];
+
+            // check validity of annotation
+            if(currentAnnot.status != 'validated' || !currentAnnot.selectedDB || !currentAnnot.annotationValue) {
+                continue;
+            }
+
+            // check if uncontrolled vocabulary
+            if(currentAnnot.selectedRelation == "sio:SIO_000223") {
+                var obj = {};
+                obj[currentAnnot.selectedDB] = currentAnnot.annotationValue;
+                rdfElement.addCustomProperty('#'+cyElement.data('id') , obj);
+            }
+            else {
+                var obj = {};
+                obj[currentAnnot.selectedRelation] = currentAnnot.annotationValue;
+                rdfElement.addResource('#'+cyElement.data('id') , obj);
+            }
+        }
+        annotExt.setRdfElement(rdfElement);
+        return annotExt;
     },
 
     getGlyphSbgnml : function(node){
         var self = this;
-        var sbgnmlText = "";
+        var nodeClass = node._private.data.class;
+        var glyphList = [];
 
-        if(node._private.data.sbgnclass === "compartment"){
-            sbgnmlText = sbgnmlText + 
-                "<glyph id='" + node._private.data.id + "' class='compartment' ";
+        if( nodeClass.startsWith('BA')) {
+            nodeClass = "biological activity";
+        }
 
-            if(node.parent().isParent()){
+        var glyph = new libsbgnjs.Glyph({id: node._private.data.id, class_: nodeClass});
+
+        // assign compartmentRef
+        if(node.parent() && node.parent().length > 0){
+            if(nodeClass === "compartment"){
                 var parent = node.parent();
-                sbgnmlText = sbgnmlText + " compartmentRef='" + node._private.data.id + "'";
+                glyph.compartmentRef = node._private.data.parent;
             }
-
-            sbgnmlText = sbgnmlText + " >\n";
-
-            sbgnmlText = sbgnmlText + this.addCommonGlyphProperties(node);
-
-            sbgnmlText = sbgnmlText + "</glyph>\n";
-
-            node.children().each(function(){
-                sbgnmlText = sbgnmlText + self.getGlyphSbgnml(this);
-            });
-        }
-        else if(node._private.data.sbgnclass === "complex" || node._private.data.sbgnclass === "submap"){
-            sbgnmlText = sbgnmlText + 
-                "<glyph id='" + node._private.data.id + "' class='" + node._private.data.sbgnclass + "' ";
-
-            if(node.parent().isParent()){
+            else {
                 var parent = node.parent()[0];
-                if(parent._private.data.sbgnclass == "compartment")
-                    sbgnmlText = sbgnmlText + " compartmentRef='" + parent._private.data.id + "'";
+                if(parent._private.data.class == "compartment")
+                    glyph.compartmentRef = parent._private.data.id;
             }
-            sbgnmlText = sbgnmlText + " >\n";
-
-            sbgnmlText = sbgnmlText + self.addCommonGlyphProperties(node);
-
-            node.children().each(function(){
-                sbgnmlText = sbgnmlText + self.getGlyphSbgnml(this);
-            });
-
-            sbgnmlText = sbgnmlText + "</glyph>\n";
         }
-        else{//it is a simple node
-            sbgnmlText = sbgnmlText + 
-                "<glyph id='" + node._private.data.id + "' class='" + node._private.data.sbgnclass + "'";
 
-            if(node.parent().isParent()){
-                var parent = node.parent()[0];
-                if(parent._private.data.sbgnclass == "compartment")
-                    sbgnmlText = sbgnmlText + " compartmentRef='" + parent._private.data.id + "'";
-            }
-
-            sbgnmlText = sbgnmlText + " >\n";
-
-            sbgnmlText = sbgnmlText + self.addCommonGlyphProperties(node);
-
-            sbgnmlText = sbgnmlText + "</glyph>\n";
-        }
-            
-        return  sbgnmlText;
-    },
-
-    addCommonGlyphProperties : function(node){
-        var sbgnmlText = "";
-
-        //add label information
-        sbgnmlText = sbgnmlText + this.addLabel(node);
-        //add bbox information
-        sbgnmlText = sbgnmlText + this.addGlyphBbox(node);
+        // misc information
+        var label = node._private.data.label;
+        if(typeof label != 'undefined')
+            glyph.setLabel(new libsbgnjs.Label({text: label}));
         //add clone information
-        sbgnmlText = sbgnmlText + this.addClone(node);
+        if(typeof node._private.data.clonemarker != 'undefined')
+            glyph.setClone(new libsbgnjs.CloneType());
+        //add bbox information
+        glyph.setBbox(this.addGlyphBbox(node));
         //add port information
-        sbgnmlText = sbgnmlText + this.addPort(node);
+        var ports = node._private.data.ports;
+        for(var i = 0 ; i < ports.length ; i++){
+            var orientation = ports[i].x === 0 ? 'vertical' : 'horizontal';
+            // This is the ratio of the area occupied for ports over the whole shape
+            var ratio = orientation === 'vertical' ? Math.abs(ports[i].y) / 50 : Math.abs(ports[i].x) / 50;
+            
+            // Divide the node sizes by the ratio because that sizes includes ports as well
+            var x = node._private.position.x + ports[i].x * ( node.width() / ratio ) / 100;
+            var y = node._private.position.y + ports[i].y * ( node.height() / ratio ) / 100;
+
+            glyph.addPort(new libsbgnjs.Port({id: ports[i].id, x: x, y: y}));
+        }
         //add state and info box information
-        sbgnmlText = sbgnmlText + this.getStateAndInfoSbgnml(node);
-
-        return sbgnmlText;
-    },
-
-    addClone : function(node){
-        var sbgnmlText = "";
-        if(typeof node._private.data.sbgnclonemarker != 'undefined')
-            sbgnmlText = sbgnmlText + "<clone/>\n";
-        return sbgnmlText;
-    },
-
-    getStateAndInfoSbgnml : function(node){
-        var sbgnmlText = "";
-
-        for(var i = 0 ; i < node._private.data.sbgnstatesandinfos.length ; i++){
-            var boxGlyph = node._private.data.sbgnstatesandinfos[i];
+        for(var i = 0 ; i < node._private.data.statesandinfos.length ; i++){
+            var boxGlyph = node._private.data.statesandinfos[i];
+            var statesandinfosId = node._private.data.id+"_"+i;
             if(boxGlyph.clazz === "state variable"){
-                sbgnmlText = sbgnmlText + this.addStateBoxGlyph(boxGlyph, node);
+                glyph.addGlyphMember(this.addStateBoxGlyph(boxGlyph, statesandinfosId, node));
             }
             else if(boxGlyph.clazz === "unit of information"){
-                sbgnmlText = sbgnmlText + this.addInfoBoxGlyph(boxGlyph, node);
+                glyph.addGlyphMember(this.addInfoBoxGlyph(boxGlyph, statesandinfosId, node));
             }
         }
-        return sbgnmlText;
+        // check for annotations
+        if (node.data('annotations') && !$.isEmptyObject(node.data('annotations'))) {
+            var extension = self.getOrCreateExtension(glyph);
+            var annotExt = self.getAnnotationExtension(node);
+            extension.add(annotExt);
+        }
+        // add glyph members that are not state variables or unit of info: subunits
+        if(nodeClass === "complex" || nodeClass === "complex multimer" || nodeClass === "submap"){
+            var children = node.children();
+            children = children.union(this.allCollapsedNodes);
+            if(node.data('collapsedChildren')) {
+              var collapsedChildren = node.data('collapsedChildren');
+              children = children.union(collapsedChildren);
+            }
+            children = children.filter("[parent = '"+ node.id() + "']")
+
+            children.each(function(ele, i){
+                if(typeof ele === "number") {
+                  ele = i;
+                }
+                var glyphMemberList = self.getGlyphSbgnml(ele);
+                for (var i=0; i < glyphMemberList.length; i++) {
+                    glyph.addGlyphMember(glyphMemberList[i]);
+                }
+            });
+        }
+
+        var newtExtString = "";
+        var hasNewtExt = false;
+
+        // add info for collapsed nodes
+        if(node.data('collapsedChildren')) {
+            newtExtString += "<collapsed/>";
+            hasNewtExt = true;
+        }
+
+        // add info for hidden nodes
+        if(node.hidden()) {
+            newtExtString += "<hidden/>";
+            hasNewtExt = true;
+        }
+
+        // add info for nodes which has hidden neighbour
+        if(node.data("thickBorder")) {
+            newtExtString += "<hasHiddenNeighbour/>";
+            hasNewtExt = true;
+        }
+
+        // add string to a new extension for this glyph
+        if(hasNewtExt) {
+            var extension = self.getOrCreateExtension(glyph);
+            extension.add("<newt>"+newtExtString+"</newt>");
+        }
+
+        // current glyph is done
+        glyphList.push(glyph);
+
+        // keep going with all the included glyphs
+        if(nodeClass === "compartment"){
+            var children = node.children();
+            children = children.union(this.allCollapsedNodes);
+            children = children.filter("[parent = '"+ node.id() + "']")
+            children.each(function(ele, i){
+                if(typeof ele === "number") {
+                  ele = i;
+                }
+                glyphList = glyphList.concat(self.getGlyphSbgnml(ele));
+            });
+        }
+
+        return  glyphList;
+    },
+
+    // element: a libsbgn.js glyph or edge object
+    getOrCreateExtension: function(element) {
+        var extension;
+        if(element.extension) { // an extension is already there for this element
+            extension = element.extension;
+        }
+        else {
+            extension = new libsbgnjs.Extension();
+            element.setExtension(extension);
+        }
+        return extension;
     },
 
     getArcSbgnml : function(edge){
-        var sbgnmlText = "";
-
+        var self = this;
         //Temporary hack to resolve "undefined" arc source and targets
         var arcTarget = edge._private.data.porttarget;
         var arcSource = edge._private.data.portsource;
-        var arcId = arcSource + "-" + arcTarget;
 
-        if (arcSource.length === 0) 
+        if (arcSource == null || arcSource.length === 0)
             arcSource = edge._private.data.source;
 
-        if (arcTarget.length === 0) 
+        if (arcTarget == null || arcTarget.length === 0)
             arcTarget = edge._private.data.target;
 
+        var arcId = edge._private.data.id;
+        var arc = new libsbgnjs.Arc({id: arcId, source: arcSource, target: arcTarget, class_: edge._private.data.class});
 
-        sbgnmlText = sbgnmlText + "<arc id='" + arcId + 
-            "' target='" + arcTarget +
-            "' source='" + arcSource + "' class='" +
-            edge._private.data.sbgnclass + "'>\n";
+        arc.setStart(new libsbgnjs.StartType({x: edge._private.rscratch.startX, y: edge._private.rscratch.startY}));
 
-        sbgnmlText = sbgnmlText + "<start y='" + edge._private.rscratch.startY + "' x='" +
-            edge._private.rscratch.startX + "'/>\n";
+        // Export bend points if edgeBendEditingExtension is registered
+        if (cy.edgeBendEditing && cy.edgeBendEditing('initialized')) {
+          var segpts = cy.edgeBendEditing('get').getSegmentPoints(edge);
+          if(segpts){
+            for(var i = 0; segpts && i < segpts.length; i = i + 2){
+              var bendX = segpts[i];
+              var bendY = segpts[i + 1];
 
-        sbgnmlText = sbgnmlText + "<end y='" + edge._private.rscratch.endY + "' x='" +
-            edge._private.rscratch.endX + "'/>\n";
+              arc.addNext(new libsbgnjs.NextType({x: bendX, y: bendY}));
+            }
+          }
+        }
 
-        sbgnmlText = sbgnmlText + "</arc>\n";
+        arc.setEnd(new libsbgnjs.EndType({x: edge._private.rscratch.endX, y: edge._private.rscratch.endY}));
 
-        return sbgnmlText;
+        var cardinality = edge._private.data.cardinality;
+        if(typeof cardinality != 'undefined' && cardinality != null) {
+            arc.addGlyph(new libsbgnjs.Glyph({
+                id: arc.id+'_card',
+                class_: 'cardinality',
+                label: new libsbgnjs.Label({text: cardinality}),
+                bbox: new libsbgnjs.Bbox({x: 0, y: 0, w: 0, h: 0}) // dummy bbox, needed for format compliance
+            }));
+        }
+        // check for annotations
+        if (edge.data('annotations') && !$.isEmptyObject(edge.data('annotations'))) {
+            var extension = self.getOrCreateExtension(arc);
+            var annotExt = this.getAnnotationExtension(edge);
+            extension.add(annotExt);
+        }
+
+        // add info for hidden edges
+        if(edge.hidden()) {
+            var extension = self.getOrCreateExtension(arc);
+            extension.add("<newt><hidden/></newt>");
+        }
+
+        return arc;
     },
 
     addGlyphBbox : function(node){
-        var bbox = node._private.data.sbgnbbox;
-        var x = node._private.position.x - bbox.w/2;
-        var y = node._private.position.y - bbox.h/2;
-        return "<bbox y='" + y + "' x='" + x + 
-            "' w='" + bbox.w + "' h='" + bbox.h + "' />\n";
+        var width = node.width();
+        var height = node.height();
+        
+        var _class = node.data('class');
+        
+        // If the node can have ports and it has exactly 2 ports then it is represented by a bigger bbox.
+        // This is because we represent it as a polygon and so the whole shape including the ports are rendered in the node bbox.
+        if (elementUtilities.canHavePorts(_class)) {
+          if (node.data('ports').length === 2) {
+            // We assume that the ports are symmetric to the node center so using just one of the ports is enough
+            var port = node.data('ports')[0];
+            var orientation = port.x === 0 ? 'vertical' : 'horizontal';
+            // This is the ratio of the area occupied with ports over without ports
+            var ratio = orientation === 'vertical' ? Math.abs(port.y) / 50 : Math.abs(port.x) / 50;
+            // Divide the bbox to the calculated ratio to get the bbox of the actual shape discluding the ports
+            width /= ratio;
+            height /= ratio;
+          }
+        }
+        
+        var x = node._private.position.x - width/2;
+        var y = node._private.position.y - height/2;
+        
+        return new libsbgnjs.Bbox({x: x, y: y, w: width, h: height});
     },
 
     addStateAndInfoBbox : function(node, boxGlyph){
         boxBbox = boxGlyph.bbox;
-        var x = node._private.position.x + (boxBbox.x - boxBbox.w/2);
-        var y = node._private.position.y + (boxBbox.y - boxBbox.h/2);
-        return "<bbox y='" + y + "' x='" + x + 
-            "' w='" + boxBbox.w + "' h='" + boxBbox.h + "' />\n";
+
+        var x = boxBbox.x / 100 * node.width();
+        var y = boxBbox.y / 100 * node.height();
+
+        x = node._private.position.x + (x - boxBbox.w/2);
+        y = node._private.position.y + (y - boxBbox.h/2);
+
+        return new libsbgnjs.Bbox({x: x, y: y, w: boxBbox.w, h: boxBbox.h});
     },
 
-    addPort : function(node){
-        var sbgnmlText = "";
+    addStateBoxGlyph : function(node, id, mainGlyph){
 
-        var ports = node._private.data.ports;
-        for(var i = 0 ; i < ports.length ; i++){
-            var x = node._private.position.x + ports[i].x;
-            var y = node._private.position.y + ports[i].y;
-
-            sbgnmlText = sbgnmlText + "<port id='" + ports[i].id + 
-                "' y='" + y + "' x='" + x + "' />\n";
-        }
-        return sbgnmlText;
-    },
-
-    addLabel : function(node){
-        var label = node._private.data.sbgnlabel;
-
-        if(typeof label != 'undefined')
-            return "<label text='" + label + "' />\n";
-        return "";
-    },
-
-    addStateBoxGlyph : function(node, mainGlyph){
-        var sbgnmlText = "";
-
-        sbgnmlText = sbgnmlText + "<glyph id='" + node.id + "' class='state variable'>\n";
-        sbgnmlText = sbgnmlText + "<state ";
-
+        var glyph = new libsbgnjs.Glyph({id: id, class_: 'state variable'});
+        var state = new libsbgnjs.StateType();
         if(typeof node.state.value != 'undefined')
-            sbgnmlText = sbgnmlText + "value='" + node.state.value + "' ";
+            state.value = node.state.value;
         if(typeof node.state.variable != 'undefined')
-            sbgnmlText = sbgnmlText + "variable='" + node.state.variable + "' ";
-        sbgnmlText = sbgnmlText + "/>\n";
-        
-        sbgnmlText = sbgnmlText + this.addStateAndInfoBbox(mainGlyph, node);
-        sbgnmlText = sbgnmlText + "</glyph>\n";
+            state.variable = node.state.variable;
+        glyph.setState(state);
+        glyph.setBbox(this.addStateAndInfoBbox(mainGlyph, node));
 
-        return sbgnmlText;
+        return glyph;
     },
 
-    addInfoBoxGlyph : function(node, mainGlyph){
-        var sbgnmlText = "";
-
-        sbgnmlText = sbgnmlText + "<glyph id='" + node.id + "' class='unit of information'>\n";
-        sbgnmlText = sbgnmlText + "<label ";
-
+    addInfoBoxGlyph : function(node, id, mainGlyph){
+        var glyph = new libsbgnjs.Glyph({id: id, class_: 'unit of information'});
+        var label = new libsbgnjs.Label();
         if(typeof node.label.text != 'undefined')
-            sbgnmlText = sbgnmlText + "text='" + node.label.text + "' ";
-        sbgnmlText = sbgnmlText + "/>\n";
-        
-        sbgnmlText = sbgnmlText + this.addStateAndInfoBbox(mainGlyph, node);
-        sbgnmlText = sbgnmlText + "</glyph>\n";
+            label.text = node.label.text;
+        glyph.setLabel(label);
+        glyph.setBbox(this.addStateAndInfoBbox(mainGlyph, node));
 
-        return sbgnmlText;
+        // assign correct entity tag for AF case
+        var entityName = null;
+        switch(mainGlyph._private.data.class) {
+            case 'BA unspecified entity':   entityName = "unspecified entity"; break;
+            case 'BA simple chemical':      entityName = "simple chemical"; break;
+            case 'BA macromolecule':        entityName = "macromolecule"; break;
+            case 'BA nucleic acid feature': entityName = "nucleic acid feature"; break;
+            case 'BA perturbing agent':     entityName = "perturbation"; break;
+            case 'BA complex':              entityName = "complex"; break;
+        }
+        // entity tag aren't always there, only for AF
+        // but we still need to keep this information for unknown map type
+        if(entityName) {
+            glyph.setEntity(new libsbgnjs.EntityType({name: entityName}));
+        }
+
+        return glyph;
     }
 };
+
+module.exports = jsonToSbgnml;

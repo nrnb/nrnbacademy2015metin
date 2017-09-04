@@ -1,4 +1,7 @@
-/nbproject
-*.iml
-node_modules
-build
+/nbproject/
+
+.idea/
+
+/HTML5Application/nbproject/private/
+
+node_modules/

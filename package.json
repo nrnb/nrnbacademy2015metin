@@ -1,0 +1,45 @@
+{
+  "name": "sbgnviz",
+  "version": "4.0.1",
+  "description": "SBGNPD visualization library",
+  "main": "src/index.js",
+  "licence": "LGPL-3.0",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build-sbgnviz-js": "gulp build",
+    "debug-js": "nodemon -e js --watch src -x \"npm run build-sbgnviz-js\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iVis-at-Bilkent/sbgnviz.js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/iVis-at-Bilkent/sbgnviz.js/issues"
+  },
+  "homepage": "https://github.com/iVis-at-Bilkent/sbgnviz.js/",
+  "peerDependencies": {
+    "jquery": "^2.2.4",
+    "filesaverjs": "~0.2.2",
+    "cytoscape": "iVis-at-Bilkent/cytoscape.js#unstable"
+  },
+  "dependencies": {
+    "libsbgn.js": "^0.1.1",
+    "pretty-data": "^0.40.0",
+    "xml2js": "^0.4.17"
+  },
+  "devDependencies": {
+    "browserify": "^11.2.0",
+    "gulp": "^3.9.0",
+    "gulp-derequire": "^2.1.0",
+    "gulp-jshint": "^1.11.2",
+    "gulp-prompt": "^0.1.2",
+    "gulp-replace": "^0.5.4",
+    "gulp-shell": "^0.5.0",
+    "gulp-util": "^3.0.6",
+    "jshint-stylish": "^2.0.1",
+    "node-notifier": "^4.3.1",
+    "run-sequence": "^1.1.4",
+    "vinyl-buffer": "^1.0.0",
+    "vinyl-source-stream": "^1.1.0"
+  }
+}
